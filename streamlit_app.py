@@ -380,7 +380,12 @@ def player_view(game_id: str, player_key: str):
 
     st.title(f"Numbers Tiebreak – {name}")
 
+    expr_key = f"expr_{player_key}"
+
+    # If round not started, clear any previous expression and show waiting message
     if not game["round_started"]:
+        if expr_key in st.session_state:
+            st.session_state[expr_key] = ""
         st.info("The host has not started the round yet. Please wait...")
         return
 
@@ -397,7 +402,6 @@ def player_view(game_id: str, player_key: str):
 
     st.markdown("---")
 
-    expr_key = f"expr_{player_key}"
     expr = st.text_area(
         "Enter your expression:",
         key=expr_key,
