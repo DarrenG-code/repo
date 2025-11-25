@@ -189,6 +189,16 @@ def start_round(game, numbers, target):
     game["winner"] = None
 
 
+def reset_game(game):
+    """Reset the game state (but keep player names)."""
+    game["numbers"] = []
+    game["target"] = None
+    game["round_started"] = False
+    game["start_time"] = None
+    game["submissions"] = {"p1": None, "p2": None}
+    game["winner"] = None
+
+
 def record_submission(game, player_key, expr):
     if not game["round_started"]:
         return
@@ -271,16 +281,23 @@ def host_view(game_id: str):
     default_target = game["target"] if game["target"] is not None else 106
     target_value = st.sidebar.number_input("Target", value=int(default_target), step=1)
 
-    if st.sidebar.button("Start round / reset for this game"):
+    start_clicked = st.sidebar.button("▶ Start round")
+    reset_clicked = st.sidebar.button("⏹ Reset game")
+
+    if start_clicked:
         try:
             numbers = parse_numbers_input(numbers_text)
             if not numbers:
                 st.sidebar.error("You must provide at least one number.")
             else:
                 start_round(game, numbers, int(target_value))
-                st.sidebar.success("Round started / reset!")
+                st.sidebar.success("Round started!")
         except ValueError as e:
             st.sidebar.error(str(e))
+
+    if reset_clicked:
+        reset_game(game)
+        st.sidebar.warning("Game reset.")
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("Player links")
@@ -292,12 +309,18 @@ def host_view(game_id: str):
     st.subheader(f"Game: {game_id}")
 
     if not game["round_started"]:
-        st.info("Round not started yet. Configure in sidebar and click **Start round / reset**.")
+        st.info("Round not started. Set numbers & target, then click **Start round**.")
         return
 
     nums_display = " ".join(str(n) for n in game["numbers"])
     st.markdown(f"**Numbers:** {nums_display}")
     st.markdown(f"**Target:** {game['target']}")
+
+    # Optional: show a brief "GO" message for host as well
+    if game["start_time"] is not None:
+        elapsed_since_start = time.time() - game["start_time"]
+        if elapsed_since_start < 3:
+            st.success("🚦 Round started! Contestants, GO!")
 
     col1, col2 = st.columns(2)
 
@@ -365,6 +388,12 @@ def player_view(game_id: str, player_key: str):
     st.subheader(f"Game: {game_id}")
     st.markdown(f"**Numbers:** {nums_display}")
     st.markdown(f"**Target:** {game['target']}")
+
+    # Flash a big START banner for the first 3 seconds
+    if game["start_time"] is not None:
+        elapsed_since_start = time.time() - game["start_time"]
+        if elapsed_since_start < 3:
+            st.success("🚦 Round started! GO!")
 
     st.markdown("---")
 
