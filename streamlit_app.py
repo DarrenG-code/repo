@@ -11,6 +11,7 @@ def fast_autorefresh(interval_ms=300, key="refresh"):
     """
     Lightweight auto-refresh without external packages.
     Forces a rerun at most once per interval_ms (per key).
+    Compatible with both old and new Streamlit versions.
     """
     now = time.time()
     last = st.session_state.get(key, None)
@@ -23,7 +24,13 @@ def fast_autorefresh(interval_ms=300, key="refresh"):
     # If enough time passed, update timestamp and rerun
     if (now - last) * 1000 >= interval_ms:
         st.session_state[key] = now
-        st.experimental_rerun()
+        if hasattr(st, "rerun"):
+            st.rerun()
+        elif hasattr(st, "experimental_rerun"):
+            st.experimental_rerun()
+        else:
+            # Last resort: do nothing (avoids crash on very old versions)
+            pass
 
 
 # ---------- Expression handling ----------
