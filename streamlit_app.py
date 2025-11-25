@@ -3,6 +3,7 @@ import ast
 from collections import Counter
 
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 
 
 # ---------- Expression handling ----------
@@ -214,6 +215,9 @@ def record_submission(game, player_key, expr):
 # ---------- UI: Host view ----------
 
 def host_view(game_id: str):
+    # Fast auto-refresh: 300 ms
+    st_autorefresh(interval=300, key=f"refresh_host_{game_id}")
+
     game = get_game(game_id)
 
     st.title("Numbers Tiebreak – Host")
@@ -318,6 +322,9 @@ def host_view(game_id: str):
 # ---------- UI: Player view ----------
 
 def player_view(game_id: str, player_key: str):
+    # Fast auto-refresh: 300 ms
+    st_autorefresh(interval=300, key=f"refresh_{game_id}_{player_key}")
+
     game = get_game(game_id)
     name = game["player_names"][player_key]
 
