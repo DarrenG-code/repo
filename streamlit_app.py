@@ -3,7 +3,27 @@ import ast
 from collections import Counter
 
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
+
+
+# ---------- Tiny auto-refresh helper (no extra packages) ----------
+
+def fast_autorefresh(interval_ms=300, key="refresh"):
+    """
+    Lightweight auto-refresh without external packages.
+    Forces a rerun at most once per interval_ms (per key).
+    """
+    now = time.time()
+    last = st.session_state.get(key, None)
+
+    # First time: just record and do not rerun yet
+    if last is None:
+        st.session_state[key] = now
+        return
+
+    # If enough time passed, update timestamp and rerun
+    if (now - last) * 1000 >= interval_ms:
+        st.session_state[key] = now
+        st.experimental_rerun()
 
 
 # ---------- Expression handling ----------
@@ -216,7 +236,7 @@ def record_submission(game, player_key, expr):
 
 def host_view(game_id: str):
     # Fast auto-refresh: 300 ms
-    st_autorefresh(interval=300, key=f"refresh_host_{game_id}")
+    fast_autorefresh(interval_ms=300, key=f"refresh_host_{game_id}")
 
     game = get_game(game_id)
 
@@ -323,7 +343,7 @@ def host_view(game_id: str):
 
 def player_view(game_id: str, player_key: str):
     # Fast auto-refresh: 300 ms
-    st_autorefresh(interval=300, key=f"refresh_{game_id}_{player_key}")
+    fast_autorefresh(interval_ms=300, key=f"refresh_{game_id}_{player_key}")
 
     game = get_game(game_id)
     name = game["player_names"][player_key]
