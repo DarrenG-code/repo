@@ -3,34 +3,7 @@ import ast
 from collections import Counter
 
 import streamlit as st
-
-
-# ---------- Tiny auto-refresh helper (no extra packages) ----------
-
-def fast_autorefresh(interval_ms=300, key="refresh"):
-    """
-    Lightweight auto-refresh without external packages.
-    Forces a rerun at most once per interval_ms (per key).
-    Compatible with both old and new Streamlit versions.
-    """
-    now = time.time()
-    last = st.session_state.get(key, None)
-
-    # First time: just record and do not rerun yet
-    if last is None:
-        st.session_state[key] = now
-        return
-
-    # If enough time passed, update timestamp and rerun
-    if (now - last) * 1000 >= interval_ms:
-        st.session_state[key] = now
-        if hasattr(st, "rerun"):
-            st.rerun()
-        elif hasattr(st, "experimental_rerun"):
-            st.experimental_rerun()
-        else:
-            # Last resort: do nothing (avoids crash on very old versions)
-            pass
+from streamlit_autorefresh import st_autorefresh
 
 
 # ---------- Expression handling ----------
@@ -199,7 +172,32 @@ def reset_game(game):
     game["winner"] = None
 
 
-def record_submission(game, player_key, expr):
+def recompute_winner(game):
+    """Apply 'closest to target wins, time as tiebreak' among valid submissions."""
+    target = game["target"]
+    best = None  # (distance, elapsed, player_key)
+
+    for player_key in ("p1", "p2"):
+        sub = game["submissions"].get(player_key)
+        if not sub:
+            continue
+        if not sub.get("valid", False):
+            continue
+
+        # Distance from target based on declared answer
+        distance = abs(sub["declared"] - target)
+        sub["distance"] = distance  # store for display
+
+        if best is None:
+            best = (distance, sub["elapsed"], player_key)
+        else:
+            if distance < best[0] or (distance == best[0] and sub["elapsed"] < best[1]):
+                best = (distance, sub["elapsed"], player_key)
+
+    game["winner"] = best[2] if best else None
+
+
+def record_submission(game, player_key, declared_value, expr):
     if not game["round_started"]:
         return
 
@@ -216,44 +214,59 @@ def record_submission(game, player_key, expr):
 
     status = {
         "name": name,
+        "declared": declared_value,
         "expression": expr,
         "elapsed": elapsed,
         "valid": False,
-        "correct": False,
         "message": "",
         "result": None,
+        "distance": None,
+        "numbers_ok": False,
+        "expr_matches_declared": False,
     }
 
     try:
         result, used_numbers = safe_evaluate_expression(expr)
         status["result"] = result
 
+        # Check number usage
         ok_nums, msg_nums = check_number_usage(numbers, used_numbers)
+        status["numbers_ok"] = ok_nums
         if not ok_nums:
             status["message"] = msg_nums
         else:
-            if abs(result - target) < 1e-9:
-                status["correct"] = True
-                status["valid"] = True
-                status["message"] = "Correct solution!"
+            # Check expression vs declared answer
+            if declared_value is None:
+                status["message"] = "You must enter a declared answer."
             else:
-                status["valid"] = True
-                status["message"] = f"Expression evaluates to {result}, not {target}."
+                if abs(result - declared_value) < 1e-9:
+                    status["expr_matches_declared"] = True
+                    status["valid"] = True
+                    status["distance"] = abs(declared_value - target)
+                    status["message"] = (
+                        f"Valid submission. Declared {declared_value}, "
+                        f"distance {status['distance']} from target."
+                    )
+                else:
+                    status["message"] = (
+                        f"Expression evaluates to {result}, "
+                        f"which does not match your declared answer {declared_value}."
+                    )
 
     except ExpressionError as e:
         status["message"] = f"Invalid expression: {e}"
 
     game["submissions"][player_key] = status
 
-    if status["correct"] and game["winner"] is None:
-        game["winner"] = player_key
+    # Recompute winner based on all valid submissions so far
+    recompute_winner(game)
 
 
 # ---------- UI: Host view ----------
 
 def host_view(game_id: str):
-    # Fast auto-refresh: 300 ms
-    fast_autorefresh(interval_ms=300, key=f"refresh_host_{game_id}")
+    # True auto-refresh from frontend: every 700ms
+    st_autorefresh(interval=700, key=f"host_refresh_{game_id}")
 
     game = get_game(game_id)
 
@@ -331,9 +344,12 @@ def host_view(game_id: str):
             st.write("No submission yet.")
         else:
             st.markdown(f"- **Time:** {sub1['elapsed']:.2f} seconds")
+            st.markdown(f"- **Declared:** {sub1['declared']}")
             st.markdown(f"- **Expression:** `{sub1['expression']}`")
             if sub1["result"] is not None:
-                st.markdown(f"- **Value:** {sub1['result']}")
+                st.markdown(f"- **Expression value:** {sub1['result']}")
+            if sub1["distance"] is not None:
+                st.markdown(f"- **Distance from target:** {sub1['distance']}")
             st.markdown(f"- **Status:** {sub1['message']}")
 
     with col2:
@@ -343,47 +359,49 @@ def host_view(game_id: str):
             st.write("No submission yet.")
         else:
             st.markdown(f"- **Time:** {sub2['elapsed']:.2f} seconds")
+            st.markdown(f"- **Declared:** {sub2['declared']}")
             st.markdown(f"- **Expression:** `{sub2['expression']}`")
             if sub2["result"] is not None:
-                st.markdown(f"- **Value:** {sub2['result']}")
+                st.markdown(f"- **Expression value:** {sub2['result']}")
+            if sub2["distance"] is not None:
+                st.markdown(f"- **Distance from target:** {sub2['distance']}")
             st.markdown(f"- **Status:** {sub2['message']}")
 
     st.markdown("---")
     st.subheader("Result")
 
     winner = game["winner"]
-    sub1 = game["submissions"]["p1"]
-    sub2 = game["submissions"]["p2"]
 
     if winner is None:
-        if (sub1 and sub1["valid"]) or (sub2 and sub2["valid"]):
-            st.write("No correct solution submitted yet.")
-        else:
-            st.write("Waiting for submissions...")
+        st.write("No valid winning submission yet.")
     else:
         winner_name = game["player_names"][winner]
         winner_sub = game["submissions"][winner]
         st.success(
-            f"🏆 **{winner_name}** wins with a correct solution "
-            f"in {winner_sub['elapsed']:.2f} seconds!"
+            f"🏆 **{winner_name}** wins! "
+            f"(declared {winner_sub['declared']}, distance {winner_sub['distance']}, "
+            f"time {winner_sub['elapsed']:.2f}s)"
         )
 
 
 # ---------- UI: Player view ----------
 
 def player_view(game_id: str, player_key: str):
-    # Fast auto-refresh: 300 ms
-    fast_autorefresh(interval_ms=300, key=f"refresh_{game_id}_{player_key}")
+    # True auto-refresh from frontend: every 700ms
+    st_autorefresh(interval=700, key=f"{player_key}_refresh_{game_id}")
 
     game = get_game(game_id)
     name = game["player_names"][player_key]
 
     st.title(f"Numbers Tiebreak – {name}")
 
+    declared_key = f"declared_{player_key}"
     expr_key = f"expr_{player_key}"
 
-    # If round not started, clear any previous expression and show waiting message
+    # If round not started, clear any previous expression/declared and show waiting
     if not game["round_started"]:
+        if declared_key in st.session_state:
+            st.session_state[declared_key] = 0
         if expr_key in st.session_state:
             st.session_state[expr_key] = ""
         st.info("The host has not started the round yet. Please wait...")
@@ -402,23 +420,34 @@ def player_view(game_id: str, player_key: str):
 
     st.markdown("---")
 
+    declared = st.number_input(
+        "Your declared result:",
+        key=declared_key,
+        step=1,
+        format="%d",
+    )
+
     expr = st.text_area(
-        "Enter your expression:",
+        "Your method (expression):",
         key=expr_key,
         height=150,
         placeholder="Example: 4*25+6",
     )
 
     if st.button("I'm done!"):
-        record_submission(game, player_key, expr)
+        # declared is a number; we pass it as int
+        record_submission(game, player_key, int(declared), expr)
 
     submission = game["submissions"][player_key]
     if submission is not None:
         st.markdown("---")
         st.markdown(f"**Time:** {submission['elapsed']:.2f} seconds")
+        st.markdown(f"**Declared:** {submission['declared']}")
         st.markdown(f"**Expression:** `{submission['expression']}`")
         if submission["result"] is not None:
-            st.markdown(f"**Value:** {submission['result']}")
+            st.markdown(f"**Expression value:** {submission['result']}")
+        if submission["distance"] is not None:
+            st.markdown(f"**Distance from target:** {submission['distance']}")
         st.markdown(f"**Status:** {submission['message']}")
 
 
