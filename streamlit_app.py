@@ -214,10 +214,9 @@ def record_submission(game, player_key, declared_value, expr):
     if not game["round_started"]:
         return
 
-    # Enforce 30-second limit: ignore submissions after time is up
+    # Enforce time limit: ignore submissions after time is up
     elapsed_from_start = time.time() - game["start_time"]
     if elapsed_from_start > ROUND_TIME_LIMIT:
-        # Still record a status so host can see they tried late
         game["submissions"][player_key] = {
             "name": game["player_names"][player_key],
             "declared": declared_value,
@@ -366,12 +365,16 @@ def host_view(game_id: str):
     st.markdown(f"**Target:** {game['target']}")
     st.markdown(f"**Time limit:** {ROUND_TIME_LIMIT} seconds")
 
-    # Show timer info
+    # Show timer info (clamped once time is up)
     if game["start_time"] is not None:
         elapsed_since_start = time.time() - game["start_time"]
-        remaining = max(0, ROUND_TIME_LIMIT - elapsed_since_start)
-        st.markdown(f"**Time elapsed:** {elapsed_since_start:.1f}s &nbsp;&nbsp; "
-                    f"**Remaining:** {remaining:.1f}s")
+        elapsed_display = min(ROUND_TIME_LIMIT, elapsed_since_start)
+        remaining_display = max(0, ROUND_TIME_LIMIT - elapsed_display)
+
+        st.markdown(
+            f"**Time elapsed:** {elapsed_display:.1f}s &nbsp;&nbsp; "
+            f"**Remaining:** {remaining_display:.1f}s"
+        )
 
         if elapsed_since_start < 3:
             st.success("🚦 Round started! Contestants, GO!")
@@ -459,12 +462,10 @@ def player_view(game_id: str, player_key: str):
     st.markdown(f"**Target:** {game['target']}")
     st.markdown(f"**Time limit:** {ROUND_TIME_LIMIT} seconds")
 
-    # Time info
     elapsed_since_start = time.time() - game["start_time"]
     remaining = max(0, ROUND_TIME_LIMIT - elapsed_since_start)
     st.markdown(f"**Time remaining:** {remaining:.1f} seconds")
 
-    # Flash a big START banner for the first 3 seconds
     if elapsed_since_start < 3:
         st.success("🚦 Round started! GO!")
     elif elapsed_since_start >= ROUND_TIME_LIMIT:
@@ -474,14 +475,50 @@ def player_view(game_id: str, player_key: str):
 
     # Default declared value = target, unless user already typed something
     if declared_key not in st.session_state:
-        # Only set on first render of a round
         st.session_state[declared_key] = game["target"]
+
+    submission = game["submissions"][player_key]
+    has_submitted = submission is not None
+    can_submit = (elapsed_since_start <= ROUND_TIME_LIMIT) and (not has_submitted)
+
+    # Show a strong banner after submission
+    if has_submitted:
+        if submission["valid"]:
+            st.success("✅ Submission received and recorded. Your method matches your declaration.")
+        else:
+            st.warning("⚠️ Submission received, but it's invalid. Check the status details below.")
+
+    # Colored panel around the inputs (green/red/neutral)
+    if has_submitted:
+        if submission["valid"]:
+            panel_color = "#dcfce7"  # light green
+            border_color = "#16a34a"
+        else:
+            panel_color = "#fef3c7"  # light amber
+            border_color = "#f59e0b"
+    else:
+        panel_color = "#f1f5f9"  # neutral
+        border_color = "#cbd5f5"
+
+    st.markdown(
+        f"""
+        <div style="
+            padding: 0.75rem 1rem;
+            border-radius: 0.75rem;
+            border: 1px solid {border_color};
+            background-color: {panel_color};
+            margin-bottom: 1rem;
+        ">
+        """,
+        unsafe_allow_html=True,
+    )
 
     declared = st.number_input(
         "Your declared result:",
         key=declared_key,
         step=1,
         format="%d",
+        disabled=has_submitted or elapsed_since_start > ROUND_TIME_LIMIT,
     )
 
     expr = st.text_area(
@@ -489,16 +526,19 @@ def player_view(game_id: str, player_key: str):
         key=expr_key,
         height=150,
         placeholder="Example: 4*25+6 or 4x25+6",
+        disabled=has_submitted or elapsed_since_start > ROUND_TIME_LIMIT,
     )
 
-    can_submit = elapsed_since_start <= ROUND_TIME_LIMIT
+    st.markdown("</div>", unsafe_allow_html=True)
 
     if can_submit:
         if st.button("I'm done!"):
             record_submission(game, player_key, int(declared), expr)
     else:
-        st.write("Submission disabled: time has expired.")
+        if not has_submitted:
+            st.write("Submission disabled: time has expired or you already submitted.")
 
+    # Show submission details
     submission = game["submissions"][player_key]
     if submission is not None:
         st.markdown("---")
