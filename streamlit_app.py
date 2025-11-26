@@ -300,8 +300,8 @@ def record_submission(game, player_key, declared_value, expr):
 # ---------- UI: Host view ----------
 
 def host_view(game_id: str):
-    # True auto-refresh from frontend: every 700ms
-    st_autorefresh(interval=700, key=f"host_refresh_{game_id}")
+    # True auto-refresh from frontend: every 1000ms
+    st_autorefresh(interval=1000, key=f"host_refresh_{game_id}")
 
     game = get_game(game_id)
 
@@ -365,16 +365,15 @@ def host_view(game_id: str):
     st.markdown(f"**Target:** {game['target']}")
     st.markdown(f"**Time limit:** {ROUND_TIME_LIMIT} seconds")
 
-    # Show timer info (clamped once time is up)
+    # Show timer info as a progress bar (clamped)
     if game["start_time"] is not None:
         elapsed_since_start = time.time() - game["start_time"]
         elapsed_display = min(ROUND_TIME_LIMIT, elapsed_since_start)
         remaining_display = max(0, ROUND_TIME_LIMIT - elapsed_display)
+        progress_pct = int((elapsed_display / ROUND_TIME_LIMIT) * 100)
 
-        st.markdown(
-            f"**Time elapsed:** {elapsed_display:.1f}s &nbsp;&nbsp; "
-            f"**Remaining:** {remaining_display:.1f}s"
-        )
+        st.markdown(f"**Time elapsed:** {elapsed_display:.0f}s  •  **Remaining:** {remaining_display:.0f}s")
+        st.progress(progress_pct)
 
         if elapsed_since_start < 3:
             st.success("🚦 Round started! Contestants, GO!")
@@ -438,8 +437,8 @@ def host_view(game_id: str):
 # ---------- UI: Player view ----------
 
 def player_view(game_id: str, player_key: str):
-    # True auto-refresh from frontend: every 700ms
-    st_autorefresh(interval=700, key=f"{player_key}_refresh_{game_id}")
+    # True auto-refresh from frontend: every 1000ms
+    st_autorefresh(interval=1000, key=f"{player_key}_refresh_{game_id}")
 
     game = get_game(game_id)
     name = game["player_names"][player_key]
@@ -464,7 +463,10 @@ def player_view(game_id: str, player_key: str):
 
     elapsed_since_start = time.time() - game["start_time"]
     remaining = max(0, ROUND_TIME_LIMIT - elapsed_since_start)
-    st.markdown(f"**Time remaining:** {remaining:.1f} seconds")
+    progress_pct = int(((ROUND_TIME_LIMIT - remaining) / ROUND_TIME_LIMIT) * 100)
+
+    st.markdown(f"**Time remaining:** {remaining:.0f} seconds")
+    st.progress(progress_pct)
 
     if elapsed_since_start < 3:
         st.success("🚦 Round started! GO!")
