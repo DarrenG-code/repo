@@ -130,7 +130,7 @@ def get_game(game_id: str):
             "target": None,
             "round_started": False,
             "start_time": None,
-            "stop_time": None,          # NEW: when host stops timer early
+            "stop_time": None,          # when host stops timer early
             "player_names": {"p1": "Player 1", "p2": "Player 2"},
             "submissions": {"p1": None, "p2": None},
             "winner": None,
@@ -213,7 +213,14 @@ def sanitise_expression(expr: str) -> str:
     )
 
 
-def record_submission(game, player_key, declared_value, expr):
+def record_submission(game, player_key, declared_value, expr, allow_after_end: bool = False):
+    """
+    Record a submission.
+
+    - If allow_after_end=False: submissions after cutoff are rejected as 'too late'.
+    - If allow_after_end=True: used for auto-submit at round end; we accept and clamp
+      elapsed to the cutoff time.
+    """
     if not game["round_started"]:
         return
 
@@ -225,7 +232,7 @@ def record_submission(game, player_key, declared_value, expr):
 
     elapsed_from_start = time.time() - game["start_time"]
 
-    if elapsed_from_start > cutoff_elapsed:
+    if (not allow_after_end) and elapsed_from_start > cutoff_elapsed:
         late_reason = (
             "round was stopped by the host."
             if game["stop_time"] is not None
@@ -251,8 +258,9 @@ def record_submission(game, player_key, declared_value, expr):
         # Already submitted
         return
 
-    submission_time = time.time()
-    elapsed = submission_time - game["start_time"]
+    # If we are auto-submitting after cutoff, clamp elapsed to cutoff
+    if allow_after_end and elapsed_from_start > cutoff_elapsed:
+        elapsed_from_start = cutoff_elapsed
 
     numbers = game["numbers"]
     target = game["target"]
@@ -265,7 +273,7 @@ def record_submission(game, player_key, declared_value, expr):
         "declared": declared_value,
         "expression": expr,          # what they typed
         "expression_eval": expr_for_eval,  # what we actually evaluated
-        "elapsed": elapsed,
+        "elapsed": elapsed_from_start,
         "valid": False,
         "message": "",
         "result": None,
@@ -380,8 +388,6 @@ def host_view(game_id: str):
     st.markdown(f"**Time limit:** {ROUND_TIME_LIMIT} seconds")
 
     # Timer / progress bar + Stop Timer & solution link
-    solution_url = None
-
     if game["start_time"] is not None:
         if game["stop_time"] is not None:
             raw_elapsed = game["stop_time"] - game["start_time"]
@@ -389,7 +395,8 @@ def host_view(game_id: str):
             raw_elapsed = time.time() - game["start_time"]
 
         elapsed_display = min(ROUND_TIME_LIMIT, raw_elapsed)
-        round_ended = (game["stop_time"] is not None) or (raw_elapsed >= ROUND_TIME_LIMIT)
+        round_ended_naturally = raw_elapsed >= ROUND_TIME_LIMIT
+        round_ended = (game["stop_time"] is not None) or round_ended_naturally
         remaining_display = 0 if round_ended else max(0, ROUND_TIME_LIMIT - raw_elapsed)
         progress_pct = int((elapsed_display / ROUND_TIME_LIMIT) * 100)
 
@@ -522,7 +529,7 @@ def player_view(game_id: str, player_key: str):
     if not round_ended and raw_elapsed < 3:
         st.success("🚦 Round started! GO!")
     elif round_ended:
-        st.error("⏰ Round has ended. You can no longer submit for this round.")
+        st.error("⏰ Round has ended.")
 
     st.markdown("---")
 
@@ -530,8 +537,34 @@ def player_view(game_id: str, player_key: str):
     if declared_key not in st.session_state:
         st.session_state[declared_key] = game["target"]
 
+    # Get current widget values (or defaults)
+    declared = st.number_input(
+        "Your declared result:",
+        key=declared_key,
+        step=1,
+        format="%d",
+        disabled=False,  # we'll disable logically below
+    )
+
+    expr = st.text_area(
+        "Your method (expression):",
+        key=expr_key,
+        height=150,
+        placeholder="Example: 4*25+6 or 4x25+6",
+        disabled=False,
+    )
+
     submission = game["submissions"][player_key]
     has_submitted = submission is not None
+
+    # If round just ended and this player hasn't submitted yet,
+    # auto-submit whatever is currently in the boxes.
+    if round_ended and not has_submitted:
+        record_submission(game, player_key, int(declared), expr, allow_after_end=True)
+        submission = game["submissions"][player_key]
+        has_submitted = True
+
+    # Recompute can_submit / disabled flags now that auto-submit may have occurred
     can_submit = (not round_ended) and (not has_submitted)
 
     # Show a strong banner after submission
@@ -553,6 +586,7 @@ def player_view(game_id: str, player_key: str):
         panel_color = "#f1f5f9"  # neutral
         border_color = "#cbd5f5"
 
+    # Re-render the inputs inside a coloured wrapper but keep them disabled
     st.markdown(
         f"""
         <div style="
@@ -560,26 +594,29 @@ def player_view(game_id: str, player_key: str):
             border-radius: 0.75rem;
             border: 1px solid {border_color};
             background-color: {panel_color};
+            margin-top: 0.5rem;
             margin-bottom: 1rem;
         ">
         """,
         unsafe_allow_html=True,
     )
 
-    declared = st.number_input(
+    # Disabled copies (to prevent further edits after end/submission)
+    st.number_input(
         "Your declared result:",
-        key=declared_key,
+        value=int(declared),
         step=1,
         format="%d",
-        disabled=has_submitted or round_ended,
+        key=f"{declared_key}_display",
+        disabled=True,
     )
 
-    expr = st.text_area(
+    st.text_area(
         "Your method (expression):",
-        key=expr_key,
+        value=expr,
         height=150,
-        placeholder="Example: 4*25+6 or 4x25+6",
-        disabled=has_submitted or round_ended,
+        key=f"{expr_key}_display",
+        disabled=True,
     )
 
     st.markdown("</div>", unsafe_allow_html=True)
@@ -589,7 +626,9 @@ def player_view(game_id: str, player_key: str):
             record_submission(game, player_key, int(declared), expr)
     else:
         if not has_submitted:
-            st.write("Submission disabled: round has ended or you already submitted.")
+            st.write("Submission disabled: round has ended.")
+        else:
+            st.write("You have already submitted.")
 
     # Show submission details
     submission = game["submissions"][player_key]
