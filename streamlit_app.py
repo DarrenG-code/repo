@@ -130,6 +130,7 @@ def get_game(game_id: str):
             "target": None,
             "round_started": False,
             "start_time": None,
+            "stop_time": None,          # NEW: when host stops timer early
             "player_names": {"p1": "Player 1", "p2": "Player 2"},
             "submissions": {"p1": None, "p2": None},
             "winner": None,
@@ -163,6 +164,7 @@ def start_round(game, numbers, target):
     game["target"] = target
     game["round_started"] = True
     game["start_time"] = time.time()
+    game["stop_time"] = None
     game["submissions"] = {"p1": None, "p2": None}
     game["winner"] = None
 
@@ -173,6 +175,7 @@ def reset_game(game):
     game["target"] = None
     game["round_started"] = False
     game["start_time"] = None
+    game["stop_time"] = None
     game["submissions"] = {"p1": None, "p2": None}
     game["winner"] = None
 
@@ -214,9 +217,20 @@ def record_submission(game, player_key, declared_value, expr):
     if not game["round_started"]:
         return
 
-    # Enforce time limit: ignore submissions after time is up
+    # Determine effective cutoff (natural timeout or host stop)
+    if game["stop_time"] is not None:
+        cutoff_elapsed = game["stop_time"] - game["start_time"]
+    else:
+        cutoff_elapsed = ROUND_TIME_LIMIT
+
     elapsed_from_start = time.time() - game["start_time"]
-    if elapsed_from_start > ROUND_TIME_LIMIT:
+
+    if elapsed_from_start > cutoff_elapsed:
+        late_reason = (
+            "round was stopped by the host."
+            if game["stop_time"] is not None
+            else f">{ROUND_TIME_LIMIT}s time limit."
+        )
         game["submissions"][player_key] = {
             "name": game["player_names"][player_key],
             "declared": declared_value,
@@ -224,7 +238,7 @@ def record_submission(game, player_key, declared_value, expr):
             "expression_eval": None,
             "elapsed": elapsed_from_start,
             "valid": False,
-            "message": f"Submission too late (>{ROUND_TIME_LIMIT}s).",
+            "message": f"Submission too late ({late_reason})",
             "result": None,
             "distance": None,
             "numbers_ok": False,
@@ -365,32 +379,45 @@ def host_view(game_id: str):
     st.markdown(f"**Target:** {game['target']}")
     st.markdown(f"**Time limit:** {ROUND_TIME_LIMIT} seconds")
 
-    # Show timer info as a progress bar (clamped)
+    # Timer / progress bar + Stop Timer & solution link
     solution_url = None
 
     if game["start_time"] is not None:
-        elapsed_since_start = time.time() - game["start_time"]
-        elapsed_display = min(ROUND_TIME_LIMIT, elapsed_since_start)
-        remaining_display = max(0, ROUND_TIME_LIMIT - elapsed_display)
+        if game["stop_time"] is not None:
+            raw_elapsed = game["stop_time"] - game["start_time"]
+        else:
+            raw_elapsed = time.time() - game["start_time"]
+
+        elapsed_display = min(ROUND_TIME_LIMIT, raw_elapsed)
+        round_ended = (game["stop_time"] is not None) or (raw_elapsed >= ROUND_TIME_LIMIT)
+        remaining_display = 0 if round_ended else max(0, ROUND_TIME_LIMIT - raw_elapsed)
         progress_pct = int((elapsed_display / ROUND_TIME_LIMIT) * 100)
 
-        st.markdown(
-            f"**Time elapsed:** {elapsed_display:.0f}s  •  "
-            f"**Remaining:** {remaining_display:.0f}s"
-        )
-        st.progress(progress_pct)
+        col_timer, col_button = st.columns([3, 1])
 
-        if elapsed_since_start < 3:
-            st.success("🚦 Round started! Contestants, GO!")
-        elif elapsed_since_start >= ROUND_TIME_LIMIT:
-            st.error("⏰ Time is up for this round.")
+        with col_timer:
+            st.markdown(
+                f"**Time elapsed:** {elapsed_display:.0f}s  •  "
+                f"**Remaining:** {remaining_display:.0f}s"
+            )
+            st.progress(progress_pct)
 
-            # ---------- NEW: link to external solution page ----------
+        with col_button:
+            if not round_ended:
+                if st.button("⏹ Stop timer now"):
+                    game["stop_time"] = time.time()
+                    round_ended = True
+
+        if not round_ended:
+            if raw_elapsed < 3:
+                st.success("🚦 Round started! Contestants, GO!")
+        else:
+            st.error("⏰ Round ended.")
+            # Link to external solution page
             base_url = "https://greem.co.uk/quantumtombola/"
             sel_param = "-".join(str(n) for n in game["numbers"])
             target_param = game["target"]
             solution_url = f"{base_url}?sel={sel_param}&target={target_param}"
-
             st.markdown(
                 f"[🔍 View solution page]({solution_url})",
                 unsafe_allow_html=False,
@@ -477,17 +504,25 @@ def player_view(game_id: str, player_key: str):
     st.markdown(f"**Target:** {game['target']}")
     st.markdown(f"**Time limit:** {ROUND_TIME_LIMIT} seconds")
 
-    elapsed_since_start = time.time() - game["start_time"]
-    remaining = max(0, ROUND_TIME_LIMIT - elapsed_since_start)
-    progress_pct = int(((ROUND_TIME_LIMIT - remaining) / ROUND_TIME_LIMIT) * 100)
+    # Timer / progress bar respecting stop_time
+    if game["stop_time"] is not None:
+        raw_elapsed = game["stop_time"] - game["start_time"]
+        round_ended = True
+    else:
+        raw_elapsed = time.time() - game["start_time"]
+        round_ended = raw_elapsed >= ROUND_TIME_LIMIT
+
+    elapsed_clamped = min(ROUND_TIME_LIMIT, raw_elapsed)
+    remaining = 0 if round_ended else max(0, ROUND_TIME_LIMIT - raw_elapsed)
+    progress_pct = int((elapsed_clamped / ROUND_TIME_LIMIT) * 100)
 
     st.markdown(f"**Time remaining:** {remaining:.0f} seconds")
     st.progress(progress_pct)
 
-    if elapsed_since_start < 3:
+    if not round_ended and raw_elapsed < 3:
         st.success("🚦 Round started! GO!")
-    elif elapsed_since_start >= ROUND_TIME_LIMIT:
-        st.error("⏰ Time is up! You can no longer submit for this round.")
+    elif round_ended:
+        st.error("⏰ Round has ended. You can no longer submit for this round.")
 
     st.markdown("---")
 
@@ -497,7 +532,7 @@ def player_view(game_id: str, player_key: str):
 
     submission = game["submissions"][player_key]
     has_submitted = submission is not None
-    can_submit = (elapsed_since_start <= ROUND_TIME_LIMIT) and (not has_submitted)
+    can_submit = (not round_ended) and (not has_submitted)
 
     # Show a strong banner after submission
     if has_submitted:
@@ -536,7 +571,7 @@ def player_view(game_id: str, player_key: str):
         key=declared_key,
         step=1,
         format="%d",
-        disabled=has_submitted or elapsed_since_start > ROUND_TIME_LIMIT,
+        disabled=has_submitted or round_ended,
     )
 
     expr = st.text_area(
@@ -544,7 +579,7 @@ def player_view(game_id: str, player_key: str):
         key=expr_key,
         height=150,
         placeholder="Example: 4*25+6 or 4x25+6",
-        disabled=has_submitted or elapsed_since_start > ROUND_TIME_LIMIT,
+        disabled=has_submitted or round_ended,
     )
 
     st.markdown("</div>", unsafe_allow_html=True)
@@ -554,7 +589,7 @@ def player_view(game_id: str, player_key: str):
             record_submission(game, player_key, int(declared), expr)
     else:
         if not has_submitted:
-            st.write("Submission disabled: time has expired or you already submitted.")
+            st.write("Submission disabled: round has ended or you already submitted.")
 
     # Show submission details
     submission = game["submissions"][player_key]
