@@ -366,19 +366,35 @@ def host_view(game_id: str):
     st.markdown(f"**Time limit:** {ROUND_TIME_LIMIT} seconds")
 
     # Show timer info as a progress bar (clamped)
+    solution_url = None
+
     if game["start_time"] is not None:
         elapsed_since_start = time.time() - game["start_time"]
         elapsed_display = min(ROUND_TIME_LIMIT, elapsed_since_start)
         remaining_display = max(0, ROUND_TIME_LIMIT - elapsed_display)
         progress_pct = int((elapsed_display / ROUND_TIME_LIMIT) * 100)
 
-        st.markdown(f"**Time elapsed:** {elapsed_display:.0f}s  •  **Remaining:** {remaining_display:.0f}s")
+        st.markdown(
+            f"**Time elapsed:** {elapsed_display:.0f}s  •  "
+            f"**Remaining:** {remaining_display:.0f}s"
+        )
         st.progress(progress_pct)
 
         if elapsed_since_start < 3:
             st.success("🚦 Round started! Contestants, GO!")
         elif elapsed_since_start >= ROUND_TIME_LIMIT:
             st.error("⏰ Time is up for this round.")
+
+            # ---------- NEW: link to external solution page ----------
+            base_url = "https://greem.co.uk/quantumtombola/"
+            sel_param = "-".join(str(n) for n in game["numbers"])
+            target_param = game["target"]
+            solution_url = f"{base_url}?sel={sel_param}&target={target_param}"
+
+            st.markdown(
+                f"[🔍 View solution page]({solution_url})",
+                unsafe_allow_html=False,
+            )
 
     col1, col2 = st.columns(2)
 
