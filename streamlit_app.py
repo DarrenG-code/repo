@@ -6,6 +6,11 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 
+# ---------- Config ----------
+
+ROUND_TIME_LIMIT = 30  # seconds
+
+
 # ---------- Expression handling ----------
 
 class ExpressionError(Exception):
@@ -184,7 +189,6 @@ def recompute_winner(game):
         if not sub.get("valid", False):
             continue
 
-        # Distance from target based on declared answer
         distance = abs(sub["declared"] - target)
         sub["distance"] = distance  # store for display
 
@@ -197,8 +201,37 @@ def recompute_winner(game):
     game["winner"] = best[2] if best else None
 
 
+def sanitise_expression(expr: str) -> str:
+    """Allow 'x'/'X'/ '×' as multiplication by converting to '*' internally."""
+    return (
+        expr.replace("×", "*")
+        .replace("x", "*")
+        .replace("X", "*")
+    )
+
+
 def record_submission(game, player_key, declared_value, expr):
     if not game["round_started"]:
+        return
+
+    # Enforce 30-second limit: ignore submissions after time is up
+    elapsed_from_start = time.time() - game["start_time"]
+    if elapsed_from_start > ROUND_TIME_LIMIT:
+        # Still record a status so host can see they tried late
+        game["submissions"][player_key] = {
+            "name": game["player_names"][player_key],
+            "declared": declared_value,
+            "expression": expr,
+            "expression_eval": None,
+            "elapsed": elapsed_from_start,
+            "valid": False,
+            "message": f"Submission too late (>{ROUND_TIME_LIMIT}s).",
+            "result": None,
+            "distance": None,
+            "numbers_ok": False,
+            "expr_matches_declared": False,
+        }
+        recompute_winner(game)
         return
 
     if game["submissions"][player_key] is not None:
@@ -212,10 +245,13 @@ def record_submission(game, player_key, declared_value, expr):
     target = game["target"]
     name = game["player_names"][player_key]
 
+    expr_for_eval = sanitise_expression(expr)
+
     status = {
         "name": name,
         "declared": declared_value,
-        "expression": expr,
+        "expression": expr,          # what they typed
+        "expression_eval": expr_for_eval,  # what we actually evaluated
         "elapsed": elapsed,
         "valid": False,
         "message": "",
@@ -226,7 +262,7 @@ def record_submission(game, player_key, declared_value, expr):
     }
 
     try:
-        result, used_numbers = safe_evaluate_expression(expr)
+        result, used_numbers = safe_evaluate_expression(expr_for_eval)
         status["result"] = result
 
         # Check number usage
@@ -328,12 +364,19 @@ def host_view(game_id: str):
     nums_display = " ".join(str(n) for n in game["numbers"])
     st.markdown(f"**Numbers:** {nums_display}")
     st.markdown(f"**Target:** {game['target']}")
+    st.markdown(f"**Time limit:** {ROUND_TIME_LIMIT} seconds")
 
-    # Optional: show a brief "GO" message for host as well
+    # Show timer info
     if game["start_time"] is not None:
         elapsed_since_start = time.time() - game["start_time"]
+        remaining = max(0, ROUND_TIME_LIMIT - elapsed_since_start)
+        st.markdown(f"**Time elapsed:** {elapsed_since_start:.1f}s &nbsp;&nbsp; "
+                    f"**Remaining:** {remaining:.1f}s")
+
         if elapsed_since_start < 3:
             st.success("🚦 Round started! Contestants, GO!")
+        elif elapsed_since_start >= ROUND_TIME_LIMIT:
+            st.error("⏰ Time is up for this round.")
 
     col1, col2 = st.columns(2)
 
@@ -345,7 +388,9 @@ def host_view(game_id: str):
         else:
             st.markdown(f"- **Time:** {sub1['elapsed']:.2f} seconds")
             st.markdown(f"- **Declared:** {sub1['declared']}")
-            st.markdown(f"- **Expression:** `{sub1['expression']}`")
+            st.markdown(f"- **Expression (typed):** `{sub1['expression']}`")
+            if sub1["expression_eval"] != sub1["expression"]:
+                st.markdown(f"- **Expression (interpreted):** `{sub1['expression_eval']}`")
             if sub1["result"] is not None:
                 st.markdown(f"- **Expression value:** {sub1['result']}")
             if sub1["distance"] is not None:
@@ -360,7 +405,9 @@ def host_view(game_id: str):
         else:
             st.markdown(f"- **Time:** {sub2['elapsed']:.2f} seconds")
             st.markdown(f"- **Declared:** {sub2['declared']}")
-            st.markdown(f"- **Expression:** `{sub2['expression']}`")
+            st.markdown(f"- **Expression (typed):** `{sub2['expression']}`")
+            if sub2["expression_eval"] != sub2["expression"]:
+                st.markdown(f"- **Expression (interpreted):** `{sub2['expression_eval']}`")
             if sub2["result"] is not None:
                 st.markdown(f"- **Expression value:** {sub2['result']}")
             if sub2["distance"] is not None:
@@ -379,7 +426,8 @@ def host_view(game_id: str):
         winner_sub = game["submissions"][winner]
         st.success(
             f"🏆 **{winner_name}** wins! "
-            f"(declared {winner_sub['declared']}, distance {winner_sub['distance']}, "
+            f"(declared {winner_sub['declared']}, "
+            f"distance {winner_sub['distance']}, "
             f"time {winner_sub['elapsed']:.2f}s)"
         )
 
@@ -400,10 +448,8 @@ def player_view(game_id: str, player_key: str):
 
     # If round not started, clear any previous expression/declared and show waiting
     if not game["round_started"]:
-        if declared_key in st.session_state:
-            st.session_state[declared_key] = 0
-        if expr_key in st.session_state:
-            st.session_state[expr_key] = ""
+        st.session_state.pop(declared_key, None)
+        st.session_state.pop(expr_key, None)
         st.info("The host has not started the round yet. Please wait...")
         return
 
@@ -411,14 +457,25 @@ def player_view(game_id: str, player_key: str):
     st.subheader(f"Game: {game_id}")
     st.markdown(f"**Numbers:** {nums_display}")
     st.markdown(f"**Target:** {game['target']}")
+    st.markdown(f"**Time limit:** {ROUND_TIME_LIMIT} seconds")
+
+    # Time info
+    elapsed_since_start = time.time() - game["start_time"]
+    remaining = max(0, ROUND_TIME_LIMIT - elapsed_since_start)
+    st.markdown(f"**Time remaining:** {remaining:.1f} seconds")
 
     # Flash a big START banner for the first 3 seconds
-    if game["start_time"] is not None:
-        elapsed_since_start = time.time() - game["start_time"]
-        if elapsed_since_start < 3:
-            st.success("🚦 Round started! GO!")
+    if elapsed_since_start < 3:
+        st.success("🚦 Round started! GO!")
+    elif elapsed_since_start >= ROUND_TIME_LIMIT:
+        st.error("⏰ Time is up! You can no longer submit for this round.")
 
     st.markdown("---")
+
+    # Default declared value = target, unless user already typed something
+    if declared_key not in st.session_state:
+        # Only set on first render of a round
+        st.session_state[declared_key] = game["target"]
 
     declared = st.number_input(
         "Your declared result:",
@@ -431,19 +488,25 @@ def player_view(game_id: str, player_key: str):
         "Your method (expression):",
         key=expr_key,
         height=150,
-        placeholder="Example: 4*25+6",
+        placeholder="Example: 4*25+6 or 4x25+6",
     )
 
-    if st.button("I'm done!"):
-        # declared is a number; we pass it as int
-        record_submission(game, player_key, int(declared), expr)
+    can_submit = elapsed_since_start <= ROUND_TIME_LIMIT
+
+    if can_submit:
+        if st.button("I'm done!"):
+            record_submission(game, player_key, int(declared), expr)
+    else:
+        st.write("Submission disabled: time has expired.")
 
     submission = game["submissions"][player_key]
     if submission is not None:
         st.markdown("---")
         st.markdown(f"**Time:** {submission['elapsed']:.2f} seconds")
         st.markdown(f"**Declared:** {submission['declared']}")
-        st.markdown(f"**Expression:** `{submission['expression']}`")
+        st.markdown(f"**Expression (typed):** `{submission['expression']}`")
+        if submission["expression_eval"] != submission["expression"]:
+            st.markdown(f"**Expression (interpreted):** `{submission['expression_eval']}`")
         if submission["result"] is not None:
             st.markdown(f"**Expression value:** {submission['result']}")
         if submission["distance"] is not None:
